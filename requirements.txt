@@ -1,0 +1,8 @@
+matplotlib
+numpy
+pandas
+plotly
+scipy
+scikit-image
+torch
+tqdm
