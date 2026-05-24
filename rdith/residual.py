@@ -1,6 +1,9 @@
 import numpy as np
 
+from .config import RFGeometryConfig
+from .doppler_projection import project_velocity_to_bistatic_doppler
 from .types import HeatmapTensor, Pose6DoF, ResidualHeatmap
+from .types import ResidualVoxelMap, VoxelRFMap
 
 
 def estimate_expected_velocity_field(
@@ -56,6 +59,44 @@ def compute_residual_heatmap(
     return ResidualHeatmap(
         residual_energy=residual_energy,
         residual_velocity=np.broadcast_to(residual_velocity, energy.shape).copy(),
+        confidence=confidence,
+    )
+
+
+def compute_residual_voxel_map(
+    voxel_rf_map: VoxelRFMap,
+    pose: Pose6DoF,
+    rf_geometry: RFGeometryConfig,
+) -> ResidualVoxelMap:
+    voxels = np.asarray(voxel_rf_map.voxel_positions_xyz, dtype=float)
+    expected_velocity = estimate_expected_velocity_field(pose, voxels)
+    link_tx = rf_geometry.tx_positions_xyz[0]
+    link_rx = rf_geometry.rx_positions_xyz[0]
+    expected_doppler = project_velocity_to_bistatic_doppler(
+        expected_velocity,
+        voxels,
+        link_tx,
+        link_rx,
+        rf_geometry.center_frequency_hz,
+        rf_geometry.speed_of_light_mps,
+    )
+    observed = np.asarray(voxel_rf_map.observed_doppler_hz, dtype=float)
+    if observed.ndim == 1:
+        observed = np.broadcast_to(observed[None, :], voxel_rf_map.energy.shape)
+    if observed.shape != voxel_rf_map.energy.shape:
+        raise ValueError("observed_doppler_hz must have shape (T, N)")
+
+    expected = np.broadcast_to(expected_doppler[None, :], observed.shape)
+    residual_doppler = observed - expected
+    residual_scale = np.abs(residual_doppler) / (np.abs(observed) + np.abs(expected) + 1e-9)
+    residual_energy = np.asarray(voxel_rf_map.energy, dtype=float) * residual_scale
+    confidence = _normalize(residual_energy) * np.asarray(voxel_rf_map.confidence, dtype=float)
+    return ResidualVoxelMap(
+        voxel_positions_xyz=voxels,
+        residual_energy=residual_energy,
+        residual_doppler_hz=residual_doppler,
+        expected_doppler_hz=expected,
+        observed_doppler_hz=observed,
         confidence=confidence,
     )
 

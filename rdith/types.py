@@ -39,6 +39,24 @@ class ResidualHeatmap:
 
 
 @dataclass
+class VoxelRFMap:
+    voxel_positions_xyz: np.ndarray
+    energy: np.ndarray
+    observed_doppler_hz: np.ndarray
+    confidence: np.ndarray
+
+
+@dataclass
+class ResidualVoxelMap:
+    voxel_positions_xyz: np.ndarray
+    residual_energy: np.ndarray
+    residual_doppler_hz: np.ndarray
+    expected_doppler_hz: np.ndarray
+    observed_doppler_hz: np.ndarray
+    confidence: np.ndarray
+
+
+@dataclass
 class RFBlob:
     centroid_xyz: np.ndarray
     velocity_xyz: np.ndarray
@@ -51,4 +69,5 @@ class RFBlob:
 @dataclass
 class ROIFeatureVector:
     roi_id: int
+    feature_names: list[str]
     features: np.ndarray

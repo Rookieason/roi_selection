@@ -2,6 +2,7 @@ matplotlib
 numpy
 pandas
 plotly
+pytest
 scipy
 scikit-image
 torch

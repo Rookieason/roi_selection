@@ -5,8 +5,10 @@ from .types import (
     HeatmapTensor,
     Pose6DoF,
     ResidualHeatmap,
+    ResidualVoxelMap,
     RFBlob,
     ROIFeatureVector,
+    VoxelRFMap,
 )
 
 __all__ = [
@@ -14,6 +16,8 @@ __all__ = [
     "HeatmapTensor",
     "Pose6DoF",
     "ResidualHeatmap",
+    "ResidualVoxelMap",
     "RFBlob",
     "ROIFeatureVector",
+    "VoxelRFMap",
 ]

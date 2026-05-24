@@ -3,6 +3,7 @@ from typing import List
 import numpy as np
 
 from .types import ResidualHeatmap, RFBlob
+from .types import ResidualVoxelMap
 
 
 def threshold_residual_heatmap(
@@ -80,6 +81,129 @@ def track_rf_blobs(
             blob.lifetime_frames = previous_blobs[best_previous_id].lifetime_frames + 1
             unmatched_previous.remove(best_previous_id)
     return blobs
+
+
+def extract_rf_blobs_from_voxels(
+    residual_map: ResidualVoxelMap,
+    threshold: float,
+    distance_eps_m: float,
+    min_samples: int,
+) -> List[RFBlob]:
+    if threshold < 0:
+        raise ValueError("threshold must be non-negative")
+    if distance_eps_m <= 0:
+        raise ValueError("distance_eps_m must be positive")
+    if min_samples < 1:
+        raise ValueError("min_samples must be at least 1")
+
+    voxels = np.asarray(residual_map.voxel_positions_xyz, dtype=float)
+    residual_energy = np.asarray(residual_map.residual_energy, dtype=float)
+    residual_doppler = np.asarray(residual_map.residual_doppler_hz, dtype=float)
+    confidence = np.asarray(residual_map.confidence, dtype=float)
+    if residual_energy.ndim != 2 or residual_energy.shape[1] != voxels.shape[0]:
+        raise ValueError("residual_energy must have shape (T, N_voxel)")
+
+    active_pairs = np.argwhere(residual_energy >= threshold)
+    if active_pairs.size == 0:
+        return []
+
+    active_voxel_ids = np.unique(active_pairs[:, 1])
+    active_points = voxels[active_voxel_ids]
+    clusters = _cluster_points(active_points, distance_eps_m, min_samples)
+    blobs: List[RFBlob] = []
+    for cluster in clusters:
+        voxel_ids = active_voxel_ids[cluster]
+        voxel_energy = np.sum(residual_energy[:, voxel_ids], axis=0)
+        total_energy = float(np.sum(voxel_energy))
+        if total_energy <= 1e-12:
+            continue
+        centroid = np.average(voxels[voxel_ids], axis=0, weights=voxel_energy)
+        doppler_values = residual_doppler[:, voxel_ids].reshape(-1)
+        blobs.append(
+            RFBlob(
+                centroid_xyz=centroid,
+                velocity_xyz=np.zeros(3, dtype=float),
+                energy=total_energy,
+                doppler_bandwidth=float(np.std(doppler_values)),
+                confidence=float(np.mean(confidence[:, voxel_ids])),
+                lifetime_frames=1,
+            )
+        )
+    return blobs
+
+
+def estimate_blob_velocities_from_previous(
+    blobs: List[RFBlob],
+    previous_blobs: List[RFBlob],
+    dt_s: float,
+    max_match_distance_m: float = 1.0,
+) -> List[RFBlob]:
+    if dt_s <= 0 or not previous_blobs:
+        return blobs
+    unmatched_previous = set(range(len(previous_blobs)))
+    for blob in blobs:
+        if not unmatched_previous:
+            break
+        previous_candidates = list(unmatched_previous)
+        distances = [
+            np.linalg.norm(blob.centroid_xyz - previous_blobs[previous_id].centroid_xyz)
+            for previous_id in previous_candidates
+        ]
+        best_offset = int(np.argmin(distances))
+        best_previous_id = previous_candidates[best_offset]
+        if distances[best_offset] <= max_match_distance_m:
+            previous = previous_blobs[best_previous_id]
+            blob.velocity_xyz = (blob.centroid_xyz - previous.centroid_xyz) / dt_s
+            blob.lifetime_frames = previous.lifetime_frames + 1
+            unmatched_previous.remove(best_previous_id)
+    return blobs
+
+
+def _cluster_points(points: np.ndarray, distance_eps_m: float, min_samples: int) -> list[np.ndarray]:
+    visited = np.zeros(points.shape[0], dtype=bool)
+    assigned = np.zeros(points.shape[0], dtype=bool)
+    clusters: list[np.ndarray] = []
+    for point_id in range(points.shape[0]):
+        if visited[point_id]:
+            continue
+        visited[point_id] = True
+        neighbors = _region_query(points, point_id, distance_eps_m)
+        if neighbors.size < min_samples:
+            continue
+        cluster_ids = _expand_cluster(points, neighbors, visited, assigned, distance_eps_m, min_samples)
+        clusters.append(cluster_ids)
+    return clusters
+
+
+def _expand_cluster(
+    points: np.ndarray,
+    seed_neighbors: np.ndarray,
+    visited: np.ndarray,
+    assigned: np.ndarray,
+    distance_eps_m: float,
+    min_samples: int,
+) -> np.ndarray:
+    cluster = set(int(item) for item in seed_neighbors)
+    queue = list(seed_neighbors)
+    while queue:
+        candidate = int(queue.pop())
+        if not visited[candidate]:
+            visited[candidate] = True
+            candidate_neighbors = _region_query(points, candidate, distance_eps_m)
+            if candidate_neighbors.size >= min_samples:
+                for neighbor in candidate_neighbors:
+                    if int(neighbor) not in cluster:
+                        queue.append(int(neighbor))
+                    cluster.add(int(neighbor))
+        if not assigned[candidate]:
+            assigned[candidate] = True
+            cluster.add(candidate)
+    return np.array(sorted(cluster), dtype=int)
+
+
+def _region_query(points: np.ndarray, point_id: int, distance_eps_m: float) -> np.ndarray:
+    distances = np.linalg.norm(points - points[point_id], axis=1)
+    return np.flatnonzero(distances <= distance_eps_m)
 
 
 def _connected_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
