@@ -34,13 +34,15 @@ def main() -> None:
     with open(args.config, "r", encoding="utf-8") as file:
         config = json.load(file)
     setting = config["heatmap_setting"]
-    tof_s = np.arange(*setting["tau_axis_param"], dtype=float) / 299792458.0
-    doppler_hz = np.arange(*setting["f_axis_param"], dtype=float)
+
+    tof_s = _axis_from_param(setting["tau_axis_param"]) / 299792458.0
+    doppler_hz = _axis_from_param(setting["f_axis_param"])
+    heatmap_data = _reshape_saved_heatmap(heatmap_data, tof_s=tof_s, doppler_hz=doppler_hz, setting=setting)
     time_s = np.arange(heatmap_data.shape[0], dtype=float) / float(setting["fs"])
 
     aoa_rad = None
     if heatmap_data.ndim == 4:
-        aoa_rad = np.deg2rad(np.arange(*setting["theta_deg_axis_param"], dtype=float))
+        aoa_rad = np.deg2rad(_axis_from_param(setting["theta_deg_axis_param"]))
 
     heatmap = wrap_existing_heatmap(heatmap_data, time_s, doppler_hz, tof_s=tof_s, aoa_rad=aoa_rad)
     rf_geometry = load_rf_geometry_config(args.rf_geometry)
@@ -115,6 +117,48 @@ def _load_heatmap_array(path: str) -> np.ndarray:
             return np.asarray(data["spectrum"], dtype=float)
         raise ValueError(".mat file must contain 'spectrum' or 'spectrums'")
     raise ValueError("heatmap path must end in .npz or .mat")
+
+
+def _axis_from_param(axis_param) -> np.ndarray:
+    if len(axis_param) != 3:
+        raise ValueError(f"axis param must be [start, stop, step], got {axis_param!r}")
+    return np.arange(axis_param[0], axis_param[1], axis_param[2], dtype=float)
+
+
+def _reshape_saved_heatmap(
+    heatmap_data: np.ndarray,
+    tof_s: np.ndarray,
+    doppler_hz: np.ndarray,
+    setting: dict,
+) -> np.ndarray:
+    """Normalize heatmap.py saved arrays before wrapping them for RDITH.
+
+    ToF-Doppler MAT output from heatmap.py is saved as
+    ``(time, len(tof) * len(doppler))``. RDITH's adapter needs the physical axes
+    to still be visible, so reshape it back to ``(time, tof, doppler)``.
+    """
+    heatmap_data = np.asarray(heatmap_data, dtype=float)
+    if heatmap_data.ndim != 2:
+        return heatmap_data
+
+    tof_doppler_size = tof_s.size * doppler_hz.size
+    if heatmap_data.shape[1] == tof_doppler_size:
+        return heatmap_data.reshape(heatmap_data.shape[0], tof_s.size, doppler_hz.size)
+
+    if heatmap_data.shape[1] == doppler_hz.size:
+        return heatmap_data
+
+    theta_param = setting.get("theta_deg_axis_param")
+    if theta_param is not None:
+        aoa_size = _axis_from_param(theta_param).size
+        aoa_tof_doppler_size = aoa_size * tof_s.size * doppler_hz.size
+        if heatmap_data.shape[1] == aoa_tof_doppler_size:
+            return heatmap_data.reshape(heatmap_data.shape[0], tof_s.size, aoa_size, doppler_hz.size)
+
+    raise ValueError(
+        "Could not infer saved heatmap shape from config: "
+        f"array shape={heatmap_data.shape}, tof={tof_s.size}, doppler={doppler_hz.size}"
+    )
 
 
 if __name__ == "__main__":
